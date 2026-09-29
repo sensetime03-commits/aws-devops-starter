@@ -1,0 +1,50 @@
+# Required CI/CD variables (GitLab: Settings > CI/CD > Variables):
+#   AWS_ACCESS_KEY_ID      (masked)
+#   AWS_SECRET_ACCESS_KEY  (masked, protected)
+#   AWS_DEFAULT_REGION     e.g. us-east-1
+#   AWS_ACCOUNT_ID         your 12-digit account id
+#   ECR_REPO               e.g. devops-starter
+#   ECS_CLUSTER            e.g. devops-starter-cluster
+#   ECS_SERVICE            e.g. devops-starter-service
+
+stages:
+  - test
+  - build
+  - deploy
+
+test:
+  stage: test
+  image: python:3.12-slim
+  script:
+    - cd app
+    - pip install -r requirements.txt
+    - pytest -v
+
+build_and_push:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - apk add --no-cache aws-cli
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+  script:
+    - export IMAGE=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO
+    - docker build -t $IMAGE:$CI_COMMIT_SHORT_SHA -t $IMAGE:latest app/
+    - docker push $IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $IMAGE:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy:
+  stage: deploy
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  script:
+    - aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment
+    - aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
